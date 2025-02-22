@@ -41,7 +41,7 @@ sudo apt install -y bc curl jq
 Step 1: Install scripts
 
 ```shell
-curl -fsSL https://raw.githubusercontent.com/nguyenanhung/agent-ssh-alert/refs/heads/main/agent-ssh-alert -o /etc/profile.d/agent-ssh-alert.sh && chmod +x /etc/profile.d/agent-ssh-alert.sh
+curl -fsSL https://go.nguyenanhung.com/agent-ssh-alert -o /etc/profile.d/agent-ssh-alert.sh && chmod +x /etc/profile.d/agent-ssh-alert.sh
 ```
 
 Step 2: Configure scripts
