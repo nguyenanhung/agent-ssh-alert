@@ -1,0 +1,304 @@
+#!/bin/bash
+##################################################################################
+#    _    _                     _   _                                            #
+#   | |  | |                   | \ | |                                           #
+#   | |__| |_   _ _ __   __ _  |  \| | __ _ _   _ _   _  ___ _ __                #
+#   |  __  | | | | '_ \ / _` | | . ` |/ _` | | | | | | |/ _ \ '_ \               #
+#   | |  | | |_| | | | | (_| | | |\  | (_| | |_| | |_| |  __/ | | |              #
+#   |_|  |_|\__,_|_| |_|\__, | |_| \_|\__, |\__,_|\__, |\___|_| |_|              #
+#                        __/ |         __/ |       __/ |                         #
+#                       |___/         |___/       |___/                          #
+#--------------------------------------------------------------------------------#
+#                       BEAR Manage Server Script Configure                      #
+# Manage Server by Hung Nguyen - hungna.dev@gmail.com - https://nguyenanhung.com #
+# Any copying without written permission is a violation of copyright policy!     #
+##################################################################################
+SCRIPT_VERSION="2.2.7"
+# Define whitelist IP addresses
+DEFAULT_WHITELIST_IP_ADDRESS=(
+  "192.168.0.1"
+  "127.0.0.1"
+)
+#----------------------------------------------------------------------#
+#   Script alert SSH Login to Telegram                                 #
+#----------------------------------------------------------------------#
+# Function to merge multiple arrays into one
+merge_arrays() {
+  local result=()    # Initialize an empty array to store the merged result
+  local array_name   # Variable to hold the name of each array passed as an argument
+  local element      # Variable to store individual elements of arrays
+  local array_length # Variable to store the length of the current array
+  local i            # Index variable for looping through array elements
+  # Loop through each array name passed to the function
+  for array_name in "$@"; do
+    array_length=$(eval "echo \${#${array_name}[@]}") # Get the length of the array using eval to access the array by name
+    # Loop through the elements of the array using index
+    for ((i = 0; i < array_length; i++)); do
+      element=$(eval "echo \${${array_name}[$i]}") # Get each element from the array by name and index
+      result+=("$element")                         # Append the element to the result array
+    done
+  done
+  printf "%s\n" "${result[@]}" # Output all elements of the result array, each on a new line
+}
+# Function parse whitelist IP addresses from configuration to array
+parse_whitelist_config() {
+  local config_file="/etc/hungng/hungng-server-whitelist.txt" # Path to the whitelist IP addresses configuration file
+  local whitelist_ips=()
+  # Check if the config file exists and is readable
+  if [[ ! -e "$config_file" || ! -r "$config_file" ]]; then
+    return 0
+  fi
+  # Read the IP addresses from the file and parse into an array
+  while IFS= read -r line; do
+    line=$(echo "$line" | xargs) # Trim whitespace
+    if [ -n "$line" ]; then
+      whitelist_ips+=("$line")
+    fi
+  done <"$config_file"
+  printf "%s\n" "${whitelist_ips[@]}" # Output the array as space-separated values
+}
+count_processes_by_user() {
+  if [[ -z "$1" ]]; then
+    echo 0
+    return
+  fi
+  local process_count
+  process_count=$(ps -eLf | awk -v pattern="$1" '$0 ~ pattern {count++} END {print count}')
+  echo "$process_count"
+}
+has_command() {
+  command -v "$1" &>/dev/null
+}
+#----------------------------------------------------------------------#
+#   Parsing Whitelist IPs configure                                    #
+#----------------------------------------------------------------------#
+# Call parse_whitelist_config and read the result into an array using read -a
+PARSED_IPS_FROM_CONFIG=()
+while IFS= read -r line; do
+  PARSED_IPS_FROM_CONFIG+=("$line")
+done < <(parse_whitelist_config)
+# Check if PARSED_IPS_FROM_CONFIG is not empty and is an array
+if [ ${#PARSED_IPS_FROM_CONFIG[@]} -gt 0 ]; then
+  WHITELIST_IP_ADDRESS=()
+  while IFS= read -r ip; do
+    WHITELIST_IP_ADDRESS+=("$ip")
+  done < <(merge_arrays DEFAULT_WHITELIST_IP_ADDRESS PARSED_IPS_FROM_CONFIG)
+else
+  WHITELIST_IP_ADDRESS=("${DEFAULT_WHITELIST_IP_ADDRESS[@]}")
+fi
+# Telegram Bot Configuration
+export BOT_TOKEN="{{YOUR_TELEGRAM_ALERT_BOT_TOKEN}}" # Your Telegram Bot Token
+export CHAT_ID="{{YOUR_TELEGRAM_SSH_ALERT_CHAT_ID}}" # Your Telegram ChatID / Chat Group ID
+# Check if SSH_CLIENT variable is not empty
+if [ -n "$SSH_CLIENT" ]; then
+  # Color
+  NC='\033[0m'
+  YELLOW='\033[0;33m'
+  GREEN='\033[0;32m'
+  PURPLE="\033[0;35m"
+  ORANGE="\033[38;5;208m"
+
+  # Function to get the last successful login details for a specific user, excluding the current session
+  get_previous_login_info() {
+    local username=$1
+    # Check if username is provided
+    if [[ -z "$username" ]]; then
+      echo "Username is required."
+      return 1
+    fi
+    # Get the last login information, excluding the current session
+    local login_info
+    login_info=$(last -i "$username" | grep -v 'still logged in' | head -n 2 | tail -n 1)
+    # Check if login_info is empty
+    if [[ -z "$login_info" ]]; then
+      echo -e "No previous login information found for user ${YELLOW}$username${NC}."
+      return 1
+    fi
+    # Extract IP address and login time using `awk`
+    local ip_address
+    ip_address=$(echo "$login_info" | awk '{print $3}')
+    local latest_time
+    latest_time=$(echo "$login_info" | awk '{print $4, $5, $6, $7, $8, $9, $10}')
+    # Print the result in the desired format
+    echo -e "Last ${YELLOW}$username${NC} login successfully from IP ${YELLOW}$ip_address${NC} at time ${YELLOW}$latest_time${NC}"
+  }
+
+  # Extract IP address and port from SSH_CLIENT variable
+  SSH_CLIENT_IP=$(echo "$SSH_CLIENT" | awk '{print $1}')
+  SSH_CLIENT_PORT=$(echo "$SSH_CLIENT" | awk '{print $3}')
+  SSH_CLIENT_WHOIS_URL="https://ip.nguyenanhung.com/view?ip=${SSH_CLIENT_IP}"
+
+  # Get hostname and IP address of the server
+  SERVER_HOSTNAME=$(hostname -f)
+
+  # Get login time of SSH session
+  SSH_SESSION_LOGIN_TIME=$(date "+%Y-%m-%d %H:%M:%S")
+  SSH_SESSION_LOGIN_DATE_EXEC=$(date +"%Y-%m-%d-%I-%M-%S-%p")
+
+  # Define the user's home directory
+  USER_HOME_DIR=$(eval echo ~"${USER}")
+
+  # Define the temporary directory and file path
+  USER_TMP_DIR="${USER_HOME_DIR}/tmp"
+  mkdir -p "$USER_TMP_DIR"
+
+  # Define temporary file to store IP information
+  TELEGRAM_ALERT_SSH_TMP_FILE="${USER_TMP_DIR}/ipinfo-${SSH_SESSION_LOGIN_DATE_EXEC}.txt"
+
+  # Retrieve IP information from ip.nguyenanhung.com using curl
+  curl "https://ip.nguyenanhung.com/json?ip=${SSH_CLIENT_IP}" -s -o "$TELEGRAM_ALERT_SSH_TMP_FILE"
+
+  # Extract location information from the temporary file
+  SSH_CLIENT_LOGIN_CITY=$(jq -r '.city' "$TELEGRAM_ALERT_SSH_TMP_FILE" | sed 's/"//g')
+  SSH_CLIENT_LOGIN_REGION=$(jq -r '.region' "$TELEGRAM_ALERT_SSH_TMP_FILE" | sed 's/"//g')
+  SSH_CLIENT_LOGIN_REGION_NAME=$(jq -r '.regionName' "$TELEGRAM_ALERT_SSH_TMP_FILE" | sed 's/"//g')
+  SSH_CLIENT_LOGIN_COUNTRY=$(jq -r '.country' "$TELEGRAM_ALERT_SSH_TMP_FILE" | sed 's/"//g')
+  SSH_CLIENT_LOGIN_COUNTRY_CODE=$(jq -r '.countryCode' "$TELEGRAM_ALERT_SSH_TMP_FILE" | sed 's/"//g')
+  SSH_CLIENT_LOGIN_ISP=$(jq -r '.isp' "$TELEGRAM_ALERT_SSH_TMP_FILE" | sed 's/"//g')
+  SSH_CLIENT_LOGIN_ORG=$(jq -r '.org' "$TELEGRAM_ALERT_SSH_TMP_FILE" | sed 's/"//g')
+  SSH_CLIENT_LOGIN_ORG_AS=$(jq -r '.as' "$TELEGRAM_ALERT_SSH_TMP_FILE" | sed 's/"//g')
+
+  # Check if SSH_CLIENT_IP is in the whitelist
+  IN_WHITELIST=false
+  for ip in "${WHITELIST_IP_ADDRESS[@]}"; do
+    if [ "$SSH_CLIENT_IP" = "$ip" ]; then
+      IN_WHITELIST=true
+      break
+    fi
+  done
+
+  # If SSH_CLIENT_IP is in the whitelist, exit without sending alert
+  if $IN_WHITELIST; then
+    read_df_info=$(df -h / | tail -n 1)
+    read -r disk_filesystem disk_size disk_used disk_avail disk_use_percentage disk_mount <<<"$read_df_info"
+    ssh_login_uptime_output=$(uptime)
+    ssh_login_uptime_only=$(echo "$ssh_login_uptime_output" | awk -F', ' '{print $1}')
+    ssh_login_uptime_only_trim=$(echo "$ssh_login_uptime_only" | awk '{$1=$1};1')
+    ssh_login_load_average=$(echo "$ssh_login_uptime_output" | awk -F'load average:' '{print $2}')
+    ssh_login_load_average_trim=$(echo "$ssh_login_load_average" | awk '{$1=$1};1')
+    server_os_compatibility=$(grep '^ID_LIKE=' /etc/os-release | cut -d= -f2- | tr -d '"')
+    os_compatibility="${server_os_compatibility^^}"
+    swap_total=$(free -m | awk '/^Swap:/{print $2}')
+    swap_used=$(free -m | awk '/^Swap:/{print $3}')
+    if [ "$swap_total" -eq 0 ]; then
+      swap_usage_percent=0
+    else
+      swap_usage_percent=$(((swap_used * 100) / swap_total))
+    fi
+
+    clear
+    get_previous_login_info "$USER"
+    echo -e "Current ${GREEN}$USER${NC} logged SSH on port ${GREEN}$SSH_CLIENT_PORT${NC} with IP address ${GREEN}$SSH_CLIENT_IP${NC} is in the whitelist. No alert sent."
+    echo
+    # Display login screen details
+    echo "|-------------------------------------------------------------------------------|"
+    printf "| %-16s | %-58s |\n" "City" "$SSH_CLIENT_LOGIN_CITY"
+    printf "| %-16s | %-58s |\n" "Region" "$SSH_CLIENT_LOGIN_REGION ($SSH_CLIENT_LOGIN_REGION_NAME)"
+    printf "| %-16s | %-58s |\n" "Country" "$SSH_CLIENT_LOGIN_COUNTRY_CODE ($SSH_CLIENT_LOGIN_COUNTRY)"
+    printf "| %-16s | %-58s |\n" "Organization" "$SSH_CLIENT_LOGIN_ORG_AS"
+    printf "| %-16s | %-58s |\n" "ISP" "$SSH_CLIENT_LOGIN_ORG"
+    printf "| %-16s | %-58s |\n" "Whois URL" "$SSH_CLIENT_WHOIS_URL"
+    echo "|-------------------------------------------------------------------------------|"
+    printf "| %-16s | %-58s |\n" "Server Time" "$(date) - $(date "+%Y-%m-%d %H:%M:%S")"
+    printf "| %-16s | %-58s |\n" "OS Name" "$(grep '^PRETTY_NAME=' /etc/os-release | cut -d= -f2- | tr -d '"')"
+    printf "| %-16s | %-58s |\n" "OS Architecture" "$(uname -m)"
+    printf "| %-16s | %-58s |\n" "OS Kernel" "$(uname -r)"
+    printf "| %-16s | %-58s |\n" "OS Compatibility" "$os_compatibility"
+    printf "| %-16s | %-58s |\n" "CPU model" "$(awk -F: '/model name/ {name=$2} END {print name}' /proc/cpuinfo | sed 's/^[ \t]*//;s/[ \t]*$//')"
+    printf "| %-16s | %-58s |\n" "Number of cores" "$(awk -F: '/model name/ {core++} END {print core}' /proc/cpuinfo)"
+    printf "| %-16s | %-58s |\n" "CPU frequency" "$(awk -F: '/cpu MHz/ {freq=$2} END {print freq}' /proc/cpuinfo | sed 's/^[ \t]*//;s/[ \t]*$//')MHz"
+    printf "| %-16s | %-58s |\n" "System Uptime" "$(awk '{a=$1/86400;b=($1%86400)/3600;c=($1%3600)/60} {printf("%d days, %d hour %d min\n",a,b,c)}' /proc/uptime)"
+    printf "| %-16s | %-58s |\n" "Load average" "$(w | head -1 | awk -F'load average:' '{print $2}' | sed 's/^[ \t]*//;s/[ \t]*$//')"
+    printf "| %-16s | %-58s |\n" "Usage of /" "${disk_use_percentage} (Used: ${disk_used} / Total: ${disk_size} / Free: ${disk_avail})"
+    printf "| %-16s | %-58s |\n" "Memory usage" "$(free -m | awk 'NR==2 {print $3/$2 * 100 "%"}')"
+    printf "| %-16s | %-58s |\n" "Swap usage" "${swap_usage_percent}%"
+    printf "| %-16s | %-58s |\n" "Processes" "$(ps aux | wc -l)"
+    check_service_processes() {
+      if has_command mysql; then
+        printf "| %-16s | %-58s |\n" "MySQL" "$(count_processes_by_user "mysql") processes"
+      fi
+      if has_command nginx; then
+        printf "| %-16s | %-58s |\n" "Nginx" "$(count_processes_by_user "nginx") processes"
+      fi
+      if has_command php-fpm; then
+        printf "| %-16s | %-58s |\n" "PHP-FPM" "$(count_processes_by_user "php-fpm") processes"
+      fi
+    }
+    echo "|-------------------------------------------------------------------------------|"
+    check_service_processes
+    echo "|-------------------------------------------------------------------------------|"
+    printf "| %-16s | %-58s |\n" "Users logged" "$(who | wc -l)"
+    ServerPublicIPv4="$(ip addr show | awk '/inet / && !/127.0.0.1/ {print $2}' | cut -d'/' -f1 | grep -Ev '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1]))')"
+    ServerPublicIPv6="$(ip addr show | awk '/inet6/ && !/scope link/ {print $2}' | cut -d'/' -f1 | grep -vE '^fe80|^::1')"
+    if [ -n "$ServerPublicIPv4" ]; then
+      printf "| %-16s | %-58s |\n" "Public IPv4" "$ServerPublicIPv4"
+    fi
+    if [ -n "$ServerPublicIPv6" ]; then
+      printf "| %-16s | %-58s |\n" "Public IPv6" "$ServerPublicIPv6"
+    fi
+    echo "|-------------------------------------------------------------------------------|"
+    # Copyright
+    echo
+    echo -e "Script Manage Server version ${SCRIPT_VERSION} by ${PURPLE}Hung Nguyen${NC} ${GREEN}<hungna.dev@gmail.com>${NC}"
+    if command -v "fail2ban-client" &>/dev/null; then
+      echo
+      echo -e "Follow the SSH ${YELLOW}brute-force${NC}: ${GREEN}secure-failed-password${NC}"
+      echo -e "Check for failed logins and banned SSH IPs: ${GREEN}sshd-ban-status${NC}"
+      echo -e "Check ${YELLOW}IP Address${NC} is banned: ${GREEN}ssh-ban-check <ip_address>${NC}"
+    fi
+    echo
+    echo "---------------------------------------------------------------------------------"
+    echo
+    # Unset
+    unset disk_mount disk_use_percentage disk_avail disk_used disk_size disk_filesystem read_df_info
+    unset ssh_login_load_average ssh_login_load_average_trim ssh_login_uptime_only ssh_login_uptime_only_trim ssh_login_uptime_output
+  else
+    ServerPublicIPv4="$(ip addr show | awk '/inet / && !/127.0.0.1/ {print $2}' | cut -d'/' -f1 | grep -Ev '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1]))')"
+    if [ -n "$ServerPublicIPv4" ]; then
+      SERVER_IPADDR="$ServerPublicIPv4"
+    else
+      fetch_public_ip() {
+        local CHECK_URL IP
+        for CHECK_URL in "https://checkip.amazonaws.com/" "https://icanhazip.com/" "https://whatismyip.akamai.com/" "https://api.ipify.org/" "https://cpanel.net/showip.cgi" "https://myip.directadmin.com/" "https://ipinfo.io/ip"; do
+          IP=$(curl -s --max-time 1 "${CHECK_URL}") && [ -n "${IP}" ] && echo "${IP}" && return 0
+        done
+        return 1
+      }
+      SERVER_IPADDR=$(fetch_public_ip)
+    fi
+    # Telegram Configuration
+    TELEGRAM_ALERT_URL="https://api.telegram.org/bot${BOT_TOKEN}/sendMessage"
+    # Create alert message for Telegram
+    TEXT_MSG="*${SSH_SESSION_LOGIN_TIME}*: User *${USER}* logged in *SSH* to *${SERVER_HOSTNAME}* (${SERVER_IPADDR}) from *${SSH_CLIENT_IP}* -
+		${SSH_CLIENT_LOGIN_ORG_AS} (${SSH_CLIENT_LOGIN_ORG}) - ${SSH_CLIENT_LOGIN_CITY}, ${SSH_CLIENT_LOGIN_REGION}, ${SSH_CLIENT_LOGIN_COUNTRY}
+		on port *${SSH_CLIENT_PORT}*"
+    # Save logs
+    LOG_FILE="/var/log/ssh-login-alert.log"
+    # Ensure the log file exists and is writable (silently ignore permission errors)
+    if [ ! -e "$LOG_FILE" ]; then
+      touch "$LOG_FILE" 2>/dev/null && chmod 666 "$LOG_FILE" 2>/dev/null
+    fi
+    # Append log if the file is writable
+    if [ -w "$LOG_FILE" ]; then
+      echo "$TEXT_MSG" >>"$LOG_FILE"
+    fi
+    # Send alert message to Telegram
+    if [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ]; then
+      curl -s --max-time 5 -d "chat_id=${CHAT_ID}&parse_mode=Markdown&disable_web_page_preview=1&text=${TEXT_MSG}" "$TELEGRAM_ALERT_URL" >/dev/null
+    fi
+    # Free up variables to lighten memory usage
+    unset TEXT_MSG TELEGRAM_ALERT_URL
+    unset SERVER_IPADDR
+  fi
+  # Remove temporary file
+  rm -f "$TELEGRAM_ALERT_SSH_TMP_FILE"
+  # Free up variables to lighten memory usage
+  unset IN_WHITELIST
+  unset SSH_CLIENT_LOGIN_ORG_AS SSH_CLIENT_LOGIN_ORG SSH_CLIENT_LOGIN_ISP SSH_CLIENT_LOGIN_COUNTRY_CODE SSH_CLIENT_LOGIN_COUNTRY
+  unset SSH_CLIENT_LOGIN_REGION_NAME SSH_CLIENT_LOGIN_REGION SSH_CLIENT_LOGIN_CITY
+  unset TELEGRAM_ALERT_SSH_TMP_FILE SSH_SESSION_LOGIN_DATE_EXEC SSH_SESSION_LOGIN_TIME
+  unset SERVER_HOSTNAME
+  unset SSH_CLIENT_WHOIS_URL SSH_CLIENT_PORT SSH_CLIENT_IP
+  unset RED GREEN PURPLE ORANGE CYAN YELLOW NC
+fi
+unset BOT_TOKEN CHAT_ID WHITELIST_IP_ADDRESS PARSED_IPS_FROM_CONFIG
