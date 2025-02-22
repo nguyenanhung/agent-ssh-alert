@@ -14,6 +14,7 @@ Hoặc đơn giản, khai báo địa chỉ IP whitelisted vào file bash, hệ 
 đăng nhập trái phép
 
 ![0.png](screen/0.png)
+![1.png](screen/1.png)
 
 ## OS Supported
 
